@@ -1,0 +1,7 @@
+# PyTorch устанавливается отдельно с CUDA поддержкой через --index-url
+# torch==2.4.0+cu121
+transformers==4.40.0
+fastapi==0.111.0
+uvicorn==0.29.0
+pydantic==2.5.0
+
