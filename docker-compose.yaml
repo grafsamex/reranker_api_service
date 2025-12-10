@@ -7,12 +7,15 @@ services:
     ports:
       - "11300:8009"
     volumes:
-      # Модель будет кэшироваться в ./data на хосте
+      # Модель будет кэшироваться в /faststor/reranker/data на хосте
       - /faststor/reranker/data:/root/.cache/huggingface
     environment:
       - HF_HOME=/root/.cache/huggingface
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - HF_DATASETS_CACHE=/root/.cache/huggingface
+      - HF_HUB_CACHE=/root/.cache/huggingface/hub
+      # Отключаем загрузку из интернета, если модель есть локально
+      - HF_HUB_OFFLINE=0
     restart: unless-stopped
     deploy:
       resources:
