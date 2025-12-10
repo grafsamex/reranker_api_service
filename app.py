@@ -1,6 +1,7 @@
 import os
 import logging
-from typing import List
+from pathlib import Path
+from typing import List, Tuple
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -17,21 +18,121 @@ HF_CACHE_DIR = os.getenv("HF_HOME") or os.getenv("TRANSFORMERS_CACHE") or os.pat
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BGEReranker")
 
+# Проверяем наличие модели в кэше
+def check_model_in_cache(model_name: str, cache_dir: str) -> Tuple[bool, str]:
+    """Проверяет, есть ли модель в кэше. Возвращает (найдено, путь)"""
+    # Если передан прямой путь к модели
+    if os.path.isdir(model_name) or os.path.isfile(model_name):
+        logger.info(f"Model path is a local directory/file: {model_name}")
+        if os.path.exists(model_name):
+            return True, model_name
+    
+    # HuggingFace хранит модели в структуре: cache_dir/hub/models--ORG--MODEL_NAME/
+    model_slug = model_name.replace("/", "--")
+    hub_path = Path(cache_dir) / "hub" / f"models--{model_slug}"
+    
+    if hub_path.exists():
+        logger.info(f"Found model cache at: {hub_path}")
+        # Проверяем наличие файлов модели в snapshots
+        snapshots = list(hub_path.glob("snapshots/*"))
+        if snapshots:
+            # Берем последний snapshot
+            latest_snapshot = max(snapshots, key=lambda p: p.stat().st_mtime)
+            logger.info(f"Found {len(snapshots)} snapshot(s) in cache, using: {latest_snapshot}")
+            # Проверяем наличие основных файлов модели
+            model_files = list(latest_snapshot.glob("*.bin")) + list(latest_snapshot.glob("*.safetensors"))
+            config_file = latest_snapshot / "config.json"
+            if model_files and config_file.exists():
+                logger.info(f"Model files found: {len(model_files)} model file(s), config.json exists")
+                return True, str(latest_snapshot)
+            else:
+                logger.warning(f"Model cache incomplete: {len(model_files)} model files, config exists: {config_file.exists()}")
+    
+    # Также проверяем старую структуру кэша (transformers < 4.20)
+    old_cache_path = Path(cache_dir) / model_name.replace("/", "--")
+    if old_cache_path.exists():
+        logger.info(f"Found model in old cache structure at: {old_cache_path}")
+        return True, str(old_cache_path)
+    
+    # Проверяем все возможные пути в кэше
+    cache_path = Path(cache_dir)
+    if cache_path.exists():
+        logger.info(f"Cache directory exists: {cache_path}")
+        # Ищем любые упоминания модели
+        for item in cache_path.rglob("*"):
+            if model_slug.lower() in item.name.lower() or model_name.split("/")[-1].lower() in item.name.lower():
+                if item.is_dir() and (item / "config.json").exists():
+                    logger.info(f"Found potential model directory: {item}")
+    
+    return False, ""
+
 # Загружаем модель один раз при старте
 logger.info(f"Loading model from: {MODEL_NAME_OR_PATH}")
 logger.info(f"GPU available: {USE_GPU}")
 logger.info(f"Using cache directory: {HF_CACHE_DIR}")
 
-tokenizer = AutoTokenizer.from_pretrained(
-    MODEL_NAME_OR_PATH, 
-    trust_remote_code=True,
-    cache_dir=HF_CACHE_DIR
-)
-model = AutoModelForSequenceClassification.from_pretrained(
-    MODEL_NAME_OR_PATH, 
-    trust_remote_code=True,
-    cache_dir=HF_CACHE_DIR
-)
+# Проверяем, нужно ли принудительно использовать только локальные файлы
+FORCE_LOCAL_FILES = os.getenv("FORCE_LOCAL_FILES", "false").lower() == "true"
+if FORCE_LOCAL_FILES:
+    logger.info("FORCE_LOCAL_FILES is set to true, will only use local files")
+
+# Проверяем наличие кэша
+cache_exists, model_path = check_model_in_cache(MODEL_NAME_OR_PATH, HF_CACHE_DIR)
+if cache_exists and model_path:
+    logger.info(f"Model found in cache at: {model_path}, loading from local files")
+    # Используем найденный путь или оригинальное имя модели
+    load_path = model_path if os.path.isdir(model_path) else MODEL_NAME_OR_PATH
+    local_files_only = True
+else:
+    if FORCE_LOCAL_FILES:
+        logger.error("FORCE_LOCAL_FILES is true but model not found in cache!")
+        raise FileNotFoundError(
+            f"Model not found in cache at {HF_CACHE_DIR}. "
+            f"Please ensure model is cached or set FORCE_LOCAL_FILES=false"
+        )
+    logger.warning("Model not found in cache, will download if needed")
+    load_path = MODEL_NAME_OR_PATH
+    local_files_only = False
+
+try:
+    logger.info(f"Loading tokenizer from: {load_path}")
+    tokenizer = AutoTokenizer.from_pretrained(
+        load_path, 
+        trust_remote_code=True,
+        cache_dir=HF_CACHE_DIR,
+        local_files_only=local_files_only
+    )
+    logger.info("Tokenizer loaded successfully")
+    
+    logger.info(f"Loading model from: {load_path}")
+    model = AutoModelForSequenceClassification.from_pretrained(
+        load_path, 
+        trust_remote_code=True,
+        cache_dir=HF_CACHE_DIR,
+        local_files_only=local_files_only
+    )
+    logger.info("Model loaded successfully")
+except Exception as e:
+    if local_files_only:
+        logger.warning(f"Failed to load from cache ({model_path}), trying to download: {e}")
+        logger.info("Attempting to download model from HuggingFace Hub...")
+        # Если не удалось загрузить из кэша, пробуем скачать
+        tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_NAME_OR_PATH, 
+            trust_remote_code=True,
+            cache_dir=HF_CACHE_DIR,
+            local_files_only=False
+        )
+        model = AutoModelForSequenceClassification.from_pretrained(
+            MODEL_NAME_OR_PATH, 
+            trust_remote_code=True,
+            cache_dir=HF_CACHE_DIR,
+            local_files_only=False
+        )
+        logger.info("Model downloaded and loaded successfully")
+    else:
+        logger.error(f"Failed to load model: {e}", exc_info=True)
+        raise
 model.eval()
 
 if USE_GPU:
