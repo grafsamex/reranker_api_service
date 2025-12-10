@@ -10,16 +10,27 @@ import torch
 MODEL_NAME_OR_PATH = os.getenv("MODEL_PATH", "BAAI/bge-reranker-v2-m3")
 USE_GPU = torch.cuda.is_available()
 
+# Настройка кэша для HuggingFace
+# Используем HF_HOME если установлен, иначе стандартный путь
+HF_CACHE_DIR = os.getenv("HF_HOME") or os.getenv("TRANSFORMERS_CACHE") or os.path.expanduser("~/.cache/huggingface")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BGEReranker")
 
 # Загружаем модель один раз при старте
 logger.info(f"Loading model from: {MODEL_NAME_OR_PATH}")
 logger.info(f"GPU available: {USE_GPU}")
+logger.info(f"Using cache directory: {HF_CACHE_DIR}")
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(
+    MODEL_NAME_OR_PATH, 
+    trust_remote_code=True,
+    cache_dir=HF_CACHE_DIR
+)
 model = AutoModelForSequenceClassification.from_pretrained(
-    MODEL_NAME_OR_PATH, trust_remote_code=True
+    MODEL_NAME_OR_PATH, 
+    trust_remote_code=True,
+    cache_dir=HF_CACHE_DIR
 )
 model.eval()
 

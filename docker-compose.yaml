@@ -11,6 +11,8 @@ services:
       - /faststor/reranker/data:/root/.cache/huggingface
     environment:
       - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - HF_DATASETS_CACHE=/root/.cache/huggingface
     restart: unless-stopped
     deploy:
       resources:
